@@ -6,7 +6,10 @@ import "@openzeppelin/contracts-upgradeable/utils/math/SafeMathUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/math/SafeMathUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@pooltogether/fixed-point/contracts/FixedPoint.sol";
+
 import "./interfaces/pooltogether/IProtocolYieldSource.sol";
 import "./interfaces/idle/IIdleToken.sol";
 import "./access/AssetManager.sol";
@@ -18,7 +21,10 @@ contract IdleYieldSource is IProtocolYieldSource, Initializable, ReentrancyGuard
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
     /// @notice Emitted when the yield source is initialized
-    event IdleYieldSourceInitialized(address indexed idleToken);
+    event IdleYieldSourceInitialized(
+        address indexed idleToken,
+        address indexed referralAddress
+    );
 
     /// @notice Emitted when asset tokens are redeemed from the yield source
     event RedeemedToken(
@@ -49,27 +55,80 @@ contract IdleYieldSource is IProtocolYieldSource, Initializable, ReentrancyGuard
         address indexed token
     );
 
+    /// @notice Emitted when referralAddress is updated by the owner
+    event ReferralAddress(
+        address indexed referralAddress
+    );
+
+    /// @notice Emitted when skipWholeRebalance is updated by the owner
+    event Rebalance(
+        bool skipRebalance
+    );
+    
     /// @notice Interface for the yield-bearing Idle Token (eg: IdleDAI, IdleUSDC, etc...)
     IIdleToken public idleToken;
 
-    uint256 public constant ONE_IDLE_TOKEN = 10**18;
+    /// @notice Address for Idle referral rewards
+    address public referralAddress;
+
+    /// @dev IdleToken has 18 decimals
+    uint256 private constant ONE_IDLE_TOKEN = 10**18;
+
+    /// @notice IdleToken boolean to skip the rebalance or not
+    /// @dev Set to `false`, it will rebalance and keep allocations up to date
+    bool private skipWholeRebalance = false;
 
     /// @notice Initializes the yield source with Idle Token
     /// @param _idleToken Idle Token address
     function initialize(
-        IIdleToken _idleToken
+        IIdleToken _idleToken,
+        address _referralAddress
     ) public initializer {
         require(address(_idleToken) != address(0), "IdleYieldSource/idleToken-not-zero-address");
         idleToken = _idleToken;
 
+        require(address(_referralAddress) != address(0), "IdleYieldSource/referralAddress-not-zero-address");
+        referralAddress = _referralAddress;
+
         __Ownable_init();
-        __ERC20_init('IdleMintShare', 'IMT');
+        __ERC20_init("IdleMintShare", "IMT");
         __ReentrancyGuard_init();
 
         IERC20Upgradeable _underlyingAsset = IERC20Upgradeable(_idleToken.token());
         _underlyingAsset.safeApprove(address(_idleToken), type(uint256).max);
 
-        emit IdleYieldSourceInitialized(address(_idleToken));
+        emit IdleYieldSourceInitialized(address(_idleToken), _referralAddress);
+    }
+
+    /// @notice Set Idle referral address
+    /// @dev Referral address can't be address zero
+    /// @dev This function is only callable by the owner or asset manager
+    /// @return true if operation is successful
+    function setReferralAddress(address _referralAddress) external onlyOwner returns (bool) {
+        require(address(_referralAddress) != address(0), "IdleYieldSource/referralAddress-not-zero-address");
+        referralAddress = _referralAddress;
+        emit ReferralAddress(_referralAddress);
+        return true;
+    }
+
+    /// @notice Set Idle token skipWholeRebalance boolean used in the `idleToken.mintIdleToken()` function
+    /// @dev This function is only callable by the owner or asset manager
+    /// @return true if operation is successful
+    function setRebalance(bool skipRebalance) external onlyOwner returns (bool) {
+        emit Rebalance(skipRebalance);
+        return skipWholeRebalance = skipRebalance;
+    }
+
+    /// @notice Approve Idle token contract to spend max uint256 amount
+    /// @dev Emergency function to re-approve max amount if approval amount dropped too low
+    /// @return true if operation is successful
+    function approveMaxAmount() external onlyOwner returns (bool) {
+        IIdleToken _idleToken = idleToken;
+        IERC20Upgradeable _underlyingAsset = IERC20Upgradeable(_idleToken.token());
+        uint256 allowance = _underlyingAsset.allowance(address(this), address(_idleToken));
+
+        _underlyingAsset.safeIncreaseAllowance(address(_idleToken), type(uint256).max.sub(allowance));
+        return true;
     }
 
     /// @notice Returns the ERC20 asset token used for deposits.
@@ -90,30 +149,47 @@ contract IdleYieldSource is IProtocolYieldSource, Initializable, ReentrancyGuard
         return _sharesToToken(balanceOf(addr));
     }
 
-    /// @notice Calculates the balance of Total idle Tokens Contract hasv
-    /// @return balance of Idle Tokens
-    function _totalShare() internal view returns(uint256) {
-        return idleToken.balanceOf(address(this));
+    /// @notice Calculates the current price per share
+    /// @return Average idleToken price for this contract
+    function _price() internal view returns (uint256) {
+      return idleToken.tokenPriceWithFee(address(this));
     }
 
     /// @notice Calculates the number of shares that should be mint or burned when a user deposit or withdraw
     /// @param tokens Amount of tokens
-    /// return Number of shares
-    function _tokenToShares(uint256 tokens) internal view returns (uint256 shares) {
-        shares = (tokens * ONE_IDLE_TOKEN) / _price();
+    /// @return Number of shares
+    function _tokenToShares(uint256 tokens) internal view returns (uint256) {
+        uint256 shares = 0;
+        uint256 totalSupply = totalSupply();
+
+        if (totalSupply == 0) {
+            shares = tokens;
+        } else {
+            // rate = tokens / shares
+            // shares = tokens * (totalShares / yieldSourceTotalSupply)
+            uint256 exchangeMantissa = FixedPoint.calculateMantissa(totalSupply, idleToken.balanceOf(address(this)).mul(_price()).div(ONE_IDLE_TOKEN));
+            shares = FixedPoint.multiplyUintByMantissa(tokens, exchangeMantissa);
+        }
+
+        return shares;
     }
 
     /// @notice Calculates the number of tokens a user has in the yield source
     /// @param shares Amount of shares
-    /// return Number of tokens
-    function _sharesToToken(uint256 shares) internal view returns (uint256 tokens) {
-        tokens = (shares * _price()) / ONE_IDLE_TOKEN;
-    }
+    /// @return Number of tokens
+    function _sharesToToken(uint256 shares) internal view returns (uint256) {
+        uint256 tokens = 0;
+        uint256 totalSupply = totalSupply();
 
-    /// @notice Calculates the current price per share
-    /// @return avg idleToken price for this contract
-    function _price() internal view returns (uint256) {
-      return idleToken.tokenPriceWithFee(address(this));
+        if (totalSupply == 0) {
+            tokens = shares;
+        } else {
+            // tokens = shares * (yieldSourceTotalSupply / totalShares)
+            uint256 exchangeMantissa = FixedPoint.calculateMantissa(idleToken.balanceOf(address(this)).mul(_price()).div(ONE_IDLE_TOKEN), totalSupply);
+            tokens = FixedPoint.multiplyUintByMantissa(shares, exchangeMantissa);
+        }
+
+        return tokens;
     }
 
     /// @notice Deposit asset tokens to Idle
@@ -121,7 +197,7 @@ contract IdleYieldSource is IProtocolYieldSource, Initializable, ReentrancyGuard
     /// @return number of minted tokens
     function _depositToIdle(uint256 mintAmount) internal returns (uint256) {
         IERC20Upgradeable(_tokenAddress()).safeTransferFrom(msg.sender, address(this), mintAmount);
-        return idleToken.mintIdleToken(mintAmount, false, address(0));
+        return idleToken.mintIdleToken(mintAmount, skipWholeRebalance, referralAddress);
     }
 
     /// @notice Allows assets to be supplied on other user's behalf using the `to` param.
