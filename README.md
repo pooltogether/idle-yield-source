@@ -8,7 +8,7 @@
 # IdleYieldSource for PoolTogether Prize Pool
 
 ![Tests](https://github.com/pooltogether/idle-yield-source/actions/workflows/main.yml/badge.svg)
-[![Coverage Status](https://coveralls.io/repos/github/pooltogether/idle-yield-source/badge.svg)](https://coveralls.io/github/pooltogether/idle-yield-source)
+[![Coverage Status](https://coveralls.io/repos/github/pooltogether/idle-yield-source/badge.svg?branch=master)](https://coveralls.io/github/pooltogether/idle-yield-source?branch=master)
 [![built-with openzeppelin](https://img.shields.io/badge/built%20with-OpenZeppelin-3677FF)](https://docs.openzeppelin.com/)
 
 PoolTogether Yield Source that uses [Idle](https://idle.finance/) to generate yield by lending ERC20 token supported by Idle and deposited into the Idle Yield Source.
