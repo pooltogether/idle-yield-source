@@ -2,7 +2,6 @@
 
 pragma solidity 0.8.4;
 
-import "@openzeppelin/contracts-upgradeable/utils/math/SafeMathUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
@@ -64,7 +63,7 @@ contract IdleYieldSource is IProtocolYieldSource, Initializable, ReentrancyGuard
     event Rebalance(
         bool skipRebalance
     );
-    
+
     /// @notice Interface for the yield-bearing Idle Token (eg: IdleDAI, IdleUSDC, etc...)
     IIdleToken public idleToken;
 
