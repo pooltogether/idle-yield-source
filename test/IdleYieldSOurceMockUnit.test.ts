@@ -162,7 +162,7 @@ describe('Idle Yield Source', () => {
 	});
 
 	describe('setRebalance()', () => {
-		it.only('should set rebalance', async () => {
+		it('should set rebalance', async () => {
 			expect(await idleYieldSource.connect(contractsOwner).callStatic.setRebalance(true)).to.equal(true);
 			expect(await idleYieldSource.connect(contractsOwner).callStatic.setRebalance(false)).to.equal(false);
 		});
